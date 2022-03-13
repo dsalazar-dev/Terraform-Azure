@@ -1,0 +1,70 @@
+#trigger:
+#- master
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  subscription: #suscription associated with the tenant
+  resourceGroup: #resource group where the Storage Account is located
+  storageAccount: #Storage Account to save .tfstate
+  container: #Container to save the .tfstate
+  tfstateFile: terraform.tfstate
+  anyTfChanges: false
+
+steps:
+- task: TerraformInstaller@0
+  displayName: Install terraform latest
+  inputs:
+    terraformVersion: 'latest'
+
+- task: TerraformTaskV2@2
+  displayName: Terraform init
+  inputs:
+    provider: 'azurerm'
+    command: 'init'
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+    backendServiceArm: '$(subscription)'
+    backendAzureRmResourceGroupName: '$(resourceGroup)'
+    backendAzureRmStorageAccountName: '$(storageAccount)'
+    backendAzureRmContainerName: '$(container)'
+    backendAzureRmKey: '$(tfstateFile)'
+
+- task: TerraformTaskV2@2
+  displayName: Terraform Plan -out=tfplan
+  inputs:
+    provider: 'azurerm'
+    command: 'plan'
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+    commandOptions: '-out=tfplan'
+    environmentServiceNameAzureRM: '$(subscription)'
+
+- task: PowerShell@2
+  displayName: Detect any terraform change
+  inputs:
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+    targetType: 'inline'
+    script: |
+      # Write-Host "LASTEXITCODE : $LASTEXITCODE"
+      $plan = $(terraform show -json tfplan | ConvertFrom-Json)
+      $actions = $plan.resource_changes.change.actions
+      Write-Host "Terraform actions : $actions"
+      if (($actions -contains 'create') -or ($actions -contains 'delete') -or ($actions -contains 'update'))
+      {
+        Write-Host "Terraform will perform the following actions : $actions"
+        Write-Host "##vso[task.setvariable variable=anyTfChanges;]true"
+      }
+      else
+      {
+        Write-Host "There is no change detected in Terraform tfplan file"
+      }
+
+- task: TerraformTaskV2@2
+  displayName: Terraform Apply tfplan
+  condition: eq(variables.anyTfChanges, true)
+  inputs:
+    provider: 'azurerm'
+    command: 'apply'
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+    commandOptions: 'tfplan'
+    environmentServiceNameAzureRM: '$(subscription)'
